@@ -237,7 +237,7 @@ The build output will be in the `dist/` directory, ready for deployment to any s
 ### Documentation
 
 - [Ripple.js Documentation](https://github.com/trueadm/ripple)
-- [Shogun Core Documentation](https://shogun-core-docs.vercel.app/)
+- [Shogun Core](https://github.com/scobru/shogun-core)
 - [GunDB Documentation](https://gun.eco/docs/)
 - [Vite Documentation](https://vitejs.dev/)
 
