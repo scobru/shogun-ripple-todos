@@ -1,0 +1,412 @@
+import { track, effect } from 'ripple';
+import { useGunInstance } from './hooks/useGunInstance.ripple';
+import { useGunAuth } from './hooks/useGunAuth.ripple';
+import { useGunCollection } from './hooks/useGunData.ripple';
+import { useSessionPersistence } from './hooks/useSessionPersistence.ripple';
+import './app.css';
+
+export component App() {
+	// Initialize Gun instance with latest autoQuickStart API
+	const shogun = useGunInstance({
+		peers: ['https://relay.shogun-eco.xyz/gun' ,"https://peer.wallie.io/gun","https://v5g5jseqhgkp43lppgregcfbvi.srv.us/gun"],
+		appScope: 'shogun-ripple-todos'
+	});
+
+	// Use Gun auth hook with Simple API
+	const { user, isLoggedIn, login, signup, logout, loading: authLoading } = useGunAuth(shogun);
+
+	// Use session persistence hook
+	const { isSessionRestored, sessionError, retrySessionRestore } = useSessionPersistence(shogun);
+
+	// Use Gun collection hook for todos using Simple API Collections
+	const { items: todos, loading: todosLoading, error: todosError, add: addTodo, update: updateTodo, remove: removeTodo, refresh: refreshTodos } = useGunCollection(shogun, 'todos', []);
+	
+	// Create reactive state for new todo input
+	let newTodoText = track('');
+	
+	// Auth state
+	let authUsername = track('');
+	let authPassword = track('');
+	let authEmail = track('');
+	let showSignup = track(false);
+	
+	// Theme state
+	let currentTheme = track('light');
+
+	// Effect to refresh todos when user authentication state changes
+	effect(() => {
+		if (@isLoggedIn) {
+			// Add a longer delay to ensure the user session is fully established and data is available
+			setTimeout(async () => {
+				try {
+					await refreshTodos();
+				} catch (error) {
+					console.error('Error refreshing todos after login:', error);
+				}
+			}, 1500); // Increased delay for session restoration and data synchronization
+		} else {
+			// Clear todos when user logs out
+			@todos = [];
+		}
+	});
+
+	// Effect to clear form fields when authentication state changes
+	effect(() => {
+		if (@isLoggedIn) {
+			// Clear auth form when user successfully logs in
+			@authUsername = '';
+			@authPassword = '';
+			@authEmail = '';
+			@showSignup = false;
+		}
+	});
+
+	// Todos are now managed by the useGunCollection hook automatically
+
+	// Add new todo using the hook with improved error handling
+	const handleAddTodo = async () => {
+		if (@newTodoText.trim()) {
+			const newTodo = {
+				text: @newTodoText.trim(),
+				completed: false
+			};
+			
+			try {
+				const result = await addTodo(newTodo);
+				if (result) {
+					@newTodoText = '';
+				}
+			} catch (error) {
+				console.error('Error adding todo:', error);
+			}
+		}
+	};
+
+	// Toggle todo completion using the hook with improved error handling
+	const toggleTodo = async (id) => {
+		const todo = @todos.find(t => t && t.id === id);
+		if (todo && todo.completed !== undefined) {
+			try {
+				const success = await updateTodo(id, { completed: !todo.completed });
+				// Todo toggled
+			} catch (error) {
+				console.error('Error toggling todo:', error);
+			}
+		}
+	};
+
+	// Delete todo using the hook with improved error handling
+	const deleteTodo = async (id) => {
+		try {
+			const success = await removeTodo(id);
+			// Todo deleted
+		} catch (error) {
+			console.error('Error deleting todo:', error);
+		}
+	};
+
+	// Handle Enter key press
+	const handleKeyPress = (e) => {
+		if (e.key === 'Enter') {
+			handleAddTodo();
+		}
+	};
+
+	// Auth functions with improved error handling
+	const handleLogin = async () => {
+		if (@authUsername.trim() && @authPassword.trim()) {
+			try {
+				const success = await login(@authUsername.trim(), @authPassword.trim());
+				if (success) {
+					console.log('Login successful');
+				} else {
+					console.error('Login failed');
+				}
+				// Form fields will be cleared automatically by the effect
+			} catch (error) {
+				console.error('Error during login:', error);
+			}
+		}
+	};
+
+	const handleSignup = async () => {
+		if (@authUsername.trim() && @authPassword.trim() && @authEmail.trim()) {
+			try {
+				const success = await signup(@authUsername.trim(), @authPassword.trim());
+				if (success) {
+					console.log('Signup successful');
+				} else {
+					console.error('Signup failed');
+				}
+				// Form fields will be cleared automatically by the effect
+			} catch (error) {
+				console.error('Error during signup:', error);
+			}
+		}
+	};
+
+	const handleLogout = async () => {
+		try {
+			logout();
+			console.log('Logout successful');
+		} catch (error) {
+			console.error('Error during logout:', error);
+		}
+	};
+
+	// Theme switching function
+	const toggleTheme = () => {
+		const newTheme = @currentTheme === 'light' ? 'dark' : 'light';
+		@currentTheme = newTheme;
+		
+		// Apply theme to document
+		document.documentElement.setAttribute('data-theme', newTheme);
+		
+		// Save theme preference to localStorage
+		localStorage.setItem('theme', newTheme);
+	};
+
+	// Initialize theme from localStorage or system preference
+	effect(() => {
+		const savedTheme = localStorage.getItem('theme');
+		const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+		const initialTheme = savedTheme || systemTheme;
+		
+		@currentTheme = initialTheme;
+		document.documentElement.setAttribute('data-theme', initialTheme);
+	});
+
+	<div class='container mx-auto max-w-2xl p-6'>
+		<div class='hero bg-base-200 rounded-lg p-8 mb-6'>
+			<div class='hero-content w-full'>
+				<div class='flex justify-between items-center w-full'>
+					<div>
+						<h1 class='text-4xl font-bold text-base-content mb-2'>{'Ripple Todo App'}</h1>
+						<p class='text-base-content/70'>{'Real-time synchronized todos with Shogun Core Simple API'}</p>
+					</div>
+					<div class='flex items-center gap-2'>
+						<span class='text-sm text-base-content/60'>{@currentTheme === 'light' ? 'Light' : 'Dark'}</span>
+						<button onClick={toggleTheme} class='btn btn-ghost btn-circle' title={`Switch to ${@currentTheme === 'light' ? 'dark' : 'light'} theme`}>
+							if (@currentTheme === 'light') {
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+								</svg>
+							} else {
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+								</svg>
+							}
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+		
+		if (@authLoading) {
+			<div class='alert alert-info'>
+				<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+				<span>{'Restoring session...'}</span>
+			</div>
+		}
+		
+		if (@sessionError && !@isLoggedIn) {
+			<div class='alert alert-error'>
+				<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+				<span>{'Session restoration failed: '}{@sessionError}</span>
+				<button onClick={retrySessionRestore} class='btn btn-sm btn-outline'>
+					{'Retry'}
+				</button>
+			</div>
+		}
+		
+		if (@todosError) {
+			<div class='alert alert-error'>
+				<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+				<span>{'Error loading todos: '}{@todosError}</span>
+			</div>
+		}
+		
+		if (@todosLoading && !@authLoading) {
+			<div class='alert alert-info'>
+				<span class="loading loading-spinner loading-sm"></span>
+				<span>{'Loading todos...'}</span>
+			</div>
+		}
+		
+		// Auth section
+		if (!@isLoggedIn) {
+			<div class='card bg-base-100 shadow-xl mb-6'>
+				<div class='card-body'>
+					<h2 class='card-title text-2xl justify-center mb-6'>{@showSignup ? 'Sign Up' : 'Login'}</h2>
+					
+					<div class='form-control w-full'>
+						<label class='label'>
+							<span class='label-text'>{"Username"}</span>
+						</label>
+						<input 
+							type='text' 
+							placeholder='Enter your username'
+							value={@authUsername}
+							onInput={(e) => {
+								if (e.target instanceof HTMLInputElement) {
+									@authUsername = e.target.value;
+								}
+							}}
+							class='input input-bordered w-full'
+						/>
+					</div>
+					
+					if (@showSignup) {
+						<div class='form-control w-full'>
+							<label class='label'>
+								<span class='label-text'>{"Email"}</span>
+							</label>
+							<input 
+								type='email' 
+								placeholder='Enter your email'
+								value={@authEmail}
+								onInput={(e) => {
+									if (e.target instanceof HTMLInputElement) {
+										@authEmail = e.target.value;
+									}
+								}}
+								class='input input-bordered w-full'
+							/>
+						</div>
+					}
+					
+					<div class='form-control w-full'>
+						<label class='label'>
+							<span class='label-text'>{"Password"}</span>
+						</label>
+						<input 
+							type='password' 
+							placeholder='Enter your password'
+							value={@authPassword}
+							onInput={(e) => {
+								if (e.target instanceof HTMLInputElement) {
+									@authPassword = e.target.value;
+								}
+							}}
+							class='input input-bordered w-full'
+						/>
+					</div>
+					
+					<div class='card-actions justify-center mt-6'>
+						<button 
+							onClick={@showSignup ? handleSignup : handleLogin}
+							class='btn btn-primary btn-wide'
+						>
+							{@showSignup ? 'Sign Up' : 'Login'}
+						</button>
+					</div>
+					
+					<div class='divider'>{"OR"}</div>
+					
+					<button 
+						onClick={() => @showSignup = !@showSignup}
+						class='btn btn-ghost'
+					>
+						{@showSignup ? 'Already have an account? Login' : 'Need an account? Sign Up'}
+					</button>
+				</div>
+			</div>
+		} else {
+			<div class='alert alert-success mb-6 break-all'>
+				<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+				<span class='flex-1'>{'Welcome, '}{@user?.username || 'User'}</span>
+				<button onClick={handleLogout} class='btn btn-sm btn-outline'>
+					{'Logout'}
+				</button>
+			</div>
+		}
+		
+		// Todo section (only show when logged in)
+		if (@isLoggedIn) {
+			<div class='card bg-base-100 shadow-xl mb-6'>
+				<div class='card-body'>
+					<h3 class='card-title mb-4'>{"Add New Todo"}</h3>
+					<div class='join w-full'>
+						<input 
+							type='text' 
+							placeholder='Add a new todo...'
+							value={@newTodoText}
+							onInput={(e) => {
+								if (e.target instanceof HTMLInputElement) {
+									@newTodoText = e.target.value;
+								}
+							}}
+							onKeyPress={handleKeyPress}
+							class='input input-bordered join-item flex-1'
+						/>
+						<button onClick={handleAddTodo} class='btn btn-primary join-item'>
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+							{"Add"}
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<div class='card bg-base-100 shadow-xl mb-6'>
+				<div class='card-body'>
+					<h3 class='card-title mb-4'>{"Your Todos"}</h3>
+					
+					if (@todos.length === 0) {
+						<div class='text-center py-8'>
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto text-base-content/30 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+							</svg>
+							<p class='text-base-content/60'>{'No todos yet. Add one above!'}</p>
+						</div>
+					}
+					
+					<div class='space-y-3'>
+						for (const todo of @todos) {
+							if (todo && todo.id && todo.text !== undefined) {
+								<div class={`card bg-base-200 shadow-sm ${todo.completed ? 'opacity-60' : ''}`}>
+									<div class='card-body p-4'>
+										<div class='flex items-center gap-3'>
+											<input 
+												type='checkbox' 
+												checked={todo.completed || false}
+												onChange={() => toggleTodo(todo.id)}
+												class='checkbox checkbox-primary'
+											/>
+											<span class={`flex-1 ${todo.completed ? 'line-through text-base-content/60' : 'text-base-content'}`}>
+												{todo.text}
+											</span>
+											<button 
+												onClick={() => deleteTodo(todo.id)}
+												class='btn btn-sm btn-error btn-circle'
+											>
+												<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+												</svg>
+											</button>
+										</div>
+									</div>
+								</div>
+							}
+						}
+					</div>
+				</div>
+			</div>
+
+			<div class='stats stats-vertical lg:stats-horizontal shadow'>
+				<div class='stat'>
+					<div class='stat-title'>{"Total"}</div>
+					<div class='stat-value text-primary'>{@todos.filter(t => t && t.id).length}</div>
+				</div>
+				<div class='stat'>
+					<div class='stat-title'>{"Completed"}</div>
+					<div class='stat-value text-success'>{@todos.filter(t => t && t.completed).length}</div>
+				</div>
+				<div class='stat'>
+					<div class='stat-title'>{"Remaining"}</div>
+					<div class='stat-value text-warning'>{@todos.filter(t => t && !t.completed).length}</div>
+				</div>
+			</div>
+		}
+	</div>
+
+}

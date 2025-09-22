@@ -1,0 +1,88 @@
+import { track } from 'ripple';
+import { autoQuickStart } from 'shogun-core';
+
+// Global Gun instance cache
+let globalGunInstance = null;
+
+/**
+ * Hook to get or create a Gun instance using latest autoQuickStart API
+ * @param {Object} config - Configuration for Gun instance
+ * @param {Array} config.peers - Array of peer URLs
+ * @param {boolean} config.singleton - Whether to use singleton pattern (default: true)
+ * @param {string} config.appScope - Application scope (default: 'shogun-ripple-todos')
+ * @returns {Object} Gun instance with Simple API
+ */
+export function useGunInstance(config = {}) {
+	const { 
+		peers = ['https://relay.shogun-eco.xyz/gun',"https://peer.wallie.io/gun","https://v5g5jseqhgkp43lppgregcfbvi.srv.us/gun"], 
+		singleton = true,
+		appScope = 'shogun-ripple-todos'
+	} = config;
+
+	// If singleton and instance exists, return it
+	if (singleton && globalGunInstance) {
+		return globalGunInstance;
+	}
+
+	// Create new instance with latest autoQuickStart API
+	const gunInstance = autoQuickStart({ 
+		peers,
+		appScope
+	});
+	
+	// Initialize the instance
+	gunInstance.init().then(() => {
+		console.log('Gun instance initialized successfully with Simple API');
+		console.log('Gun instance:', gunInstance);
+		console.log('API available:', !!gunInstance.api);
+		console.log('Database available:', !!gunInstance.database);
+		console.log('Simple API methods:', Object.keys(gunInstance.api || {}));
+		
+		// Ensure database is properly initialized
+		if (gunInstance.database) {
+			console.log('Database instance ready for session restoration');
+		}
+	}).catch(err => {
+		console.error('Failed to initialize Gun instance:', err);
+	});
+
+	window.gunInstance = gunInstance;
+
+	// Cache it if singleton
+	if (singleton) {
+		globalGunInstance = gunInstance;
+	}
+
+	return gunInstance;
+}
+
+/**
+ * Hook to create a new Gun instance (always creates new instance) using latest API
+ * @param {Object} config - Configuration for Gun instance
+ * @param {Array} config.peers - Array of peer URLs
+ * @param {string} config.appScope - Application scope
+ * @returns {Object} New Gun instance with Simple API
+ */
+export function useNewGunInstance(config = {}) {
+	const { 
+		peers = ['https://relay.shogun-eco.xyz/gun',"https://peer.wallie.io/gun","https://v5g5jseqhgkp43lppgregcfbvi.srv.us/gun"],
+		appScope = 'shogun-ripple-todos'
+	} = config;
+	return autoQuickStart({ peers, appScope });
+}
+
+/**
+ * Hook to get the global Gun instance (if it exists)
+ * @returns {Object|null} Global Gun instance or null
+ */
+export function useGlobalGunInstance() {
+	return globalGunInstance;
+}
+
+/**
+ * Hook to clear the global Gun instance
+ * @returns {void}
+ */
+export function useClearGunInstance() {
+	globalGunInstance = null;
+}

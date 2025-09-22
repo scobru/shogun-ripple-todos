@@ -1,0 +1,150 @@
+import { track } from 'ripple';
+
+/**
+ * Hook for GunDB authentication operations using Simple API
+ * @param {Object} gunInstance - The Gun instance (from autoQuickStart)
+ * @returns {Object} { isLoggedIn, user, loading, error, login, signup, logout, checkAuth }
+ */
+export function useGunAuth(gunInstance) {
+	const isLoggedIn = track(false);
+	const user = track(null);
+	const loading = track(false);
+	const error = track('');
+
+	const api = gunInstance.api;
+
+	// Check authentication status and restore session
+	const checkAuth = async () => {
+		try {
+			@loading = true;
+			@error = '';
+			
+			// Wait a bit for GunDB's internal session restoration to complete
+			await new Promise(resolve => setTimeout(resolve, 500));
+			
+			// Check if user is logged in using Simple API (GunDB handles session restoration internally)
+			const loggedIn = api.isLoggedIn();
+			console.log('Is logged in after GunDB session restoration:', loggedIn);
+			
+			@isLoggedIn = loggedIn;
+			
+			if (loggedIn) {
+				const currentUser = api.getCurrentUser();
+				console.log('Current user after session restoration:', currentUser);
+				@user = currentUser;
+			} else {
+				@user = null;
+			}
+		} catch (err) {
+			@error = err.message;
+			console.error('Error checking auth status:', err);
+		} finally {
+			@loading = false;
+		}
+	};
+
+	// Login function using Simple API
+	const login = async (username, password) => {
+		try {
+			@loading = true;
+			@error = '';
+			
+			if (!username?.trim() || !password?.trim()) {
+				@error = 'Username and password are required';
+				return false;
+			}
+
+			// Check if user is already logged in
+			const currentUser = api.getCurrentUser();
+			if (currentUser) {
+				@isLoggedIn = true;
+				@user = currentUser;
+				return true;
+			}
+
+			// Use Simple API login method
+			const result = await api.login(username.trim(), password.trim());
+
+			if (result) {
+				@isLoggedIn = true;
+				@user = api.getCurrentUser();
+				console.log('Login successful:', result);
+				return true;
+			} else {
+				@error = 'Login failed. Please check your credentials.';
+				return false;
+			}
+		} catch (err) {
+			@error = err.message || 'Login failed';
+			console.error('Login error:', err);
+			return false;
+		} finally {
+			@loading = false;
+		}
+	};
+
+	// Signup function using Simple API
+	const signup = async (username, password) => {
+		try {
+			@loading = true;
+			@error = '';
+			
+			if (!username?.trim() || !password?.trim()) {
+				@error = 'Username and password are required';
+				return false;
+			}
+
+			if (password.length < 6) {
+				@error = 'Password must be at least 6 characters long';
+				return false;
+			}
+
+			// Use Simple API signup method
+			const result = await api.signup(username, password);
+			
+			if (result) {
+				@isLoggedIn = true;
+				@user = api.getCurrentUser();
+				console.log('Signup successful:', result);
+				return true; 
+			} else {
+				@error = 'Signup failed. Username might already exist.';
+				return false;
+			}
+		} catch (err) {
+			@error = err.message || 'Signup failed';
+			console.error('Signup error:', err);
+			return false;
+		} finally {
+			@loading = false;
+		}
+	};
+
+	// Logout function using Simple API
+	const logout = () => {
+		try {
+			api.logout();
+			@isLoggedIn = false;
+			@user = null;
+			@error = '';
+			console.log('Logout successful');
+		} catch (err) {
+			@error = err.message;
+			console.error('Logout error:', err);
+		}
+	};
+
+	// Check auth on initialization
+	checkAuth();
+
+	return {
+		isLoggedIn,
+		user,
+		loading,
+		error,
+		login,
+		signup,
+		logout,
+		checkAuth
+	};
+}

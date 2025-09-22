@@ -1,0 +1,753 @@
+import { track } from 'ripple';
+
+/**
+ * Generic hook for GunDB data operations using Simple API
+ * @param {Object} gunInstance - The Gun instance (from autoQuickStart)
+ * @param {string} path - The data path (e.g., 'todos', 'users/profile')
+ * @param {*} defaultValue - Default value if data doesn't exist
+ * @param {boolean} realtime - Whether to listen for real-time updates
+ * @returns {Object} { data, loading, error, put, get, remove, set }
+ */
+export function useGunData(gunInstance, path, defaultValue = null, realtime = true) {
+	const data = track(defaultValue);
+	const loading = track(true);
+	const error = track(null);
+
+	const api = gunInstance.api;
+
+	// Initial data fetch
+	const fetchData = async () => {
+		try {
+			@loading = true;
+			@error = null;
+			const result = await api.get(path);
+			@data = result || defaultValue;
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error fetching data from ${path}:`, err);
+		} finally {
+			@loading = false;
+		}
+	};
+
+	// Real-time listener using new node() method
+	if (realtime) {
+		const node = api.node(path);
+		node.on((value) => {
+			@data = value || defaultValue;
+			@loading = false;
+		});
+	}
+
+	// Fetch initial data
+	fetchData();
+
+	// Data operations using Simple API
+	const put = async (newData) => {
+		try {
+			@error = null;
+			const success = await api.put(path, newData);
+			if (success) {
+				@data = newData;
+			}
+			return success;
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error putting data to ${path}:`, err);
+			return false;
+		}
+	};
+
+	const set = async (newData) => {
+		try {
+			@error = null;
+			const success = await api.set(path, newData);
+			if (success) {
+				@data = newData;
+			}
+			return success;
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error setting data to ${path}:`, err);
+			return false;
+		}
+	};
+
+	const get = async () => {
+		return await fetchData();
+	};
+
+	const remove = async () => {
+		try {
+			@error = null;
+			const success = await api.remove(path);
+			if (success) {
+				@data = defaultValue;
+			}
+			return success;
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error removing data from ${path}:`, err);
+			return false;
+		}
+	};
+
+	return {
+		data,
+		loading,
+		error,
+		put,
+		get,
+		remove,
+		set,
+		refresh: fetchData
+	};
+}
+
+/**
+ * Hook for managing collections using Simple API Collections
+ * @param {Object} gunInstance - The Gun instance (from autoQuickStart)
+ * @param {string} collectionName - The collection name (e.g., 'todos')
+ * @param {Array} defaultValue - Default array value
+ * @param {boolean} realtime - Whether to listen for real-time updates
+ * @returns {Object} { items, loading, error, add, update, remove, clear }
+ */
+export function useGunCollection(gunInstance, collectionName, defaultValue = [], realtime = true) {
+	const items = track(defaultValue);
+	const loading = track(true);
+	const error = track(null);
+
+	const api = gunInstance.api;
+
+	// Initial data fetch using Simple API Collections with retry mechanism
+	const fetchData = async (retryCount = 0) => {
+		try {
+			@loading = true;
+			@error = null;
+			
+			// Wait a bit for session restoration if needed
+			let attempts = 0;
+			const maxAttempts = 20; // Increased attempts for session restoration
+			
+			while (!api.isLoggedIn() && attempts < maxAttempts) {
+				await new Promise(resolve => setTimeout(resolve, 100));
+				attempts++;
+			}
+			
+			// Check if user is logged in after waiting
+			if (!api.isLoggedIn()) {
+				console.log('User not logged in after session restoration attempt, setting default items');
+				@items = defaultValue;
+				@loading = false;
+				return;
+			}
+			
+			// Use direct GunDB access for better synchronization
+			const user = gunInstance.database.getUser();
+		if (!user || !user.is) {
+				console.error('User node not available for collection fetch');
+			@items = defaultValue;
+			@loading = false;
+			return;
+		}
+		
+			// Try direct GunDB access first (todos collection)
+			let collectionData = null;
+			
+			if (collectionName === 'todos') {
+				collectionData = await new Promise((resolve) => {
+					const timeout = setTimeout(() => {
+						resolve(null);
+					}, 8000);
+					
+					user.get('todos').once(async (data) => {
+						clearTimeout(timeout);
+						
+						// If we got references instead of actual data, fetch the real data
+						if (data && typeof data === 'object') {
+							const entries = Object.entries(data);
+							const nullCount = entries.filter(([key, value]) => 
+								key !== '_' && value === null
+							).length;
+							
+							// If more than 50% of nodes are null, try direct access to todo nodes
+							if (nullCount > entries.length * 0.5) {
+								// Try to get todos directly from the graph by accessing each node individually
+								const actualData = {};
+								let foundTodos = 0;
+								
+								// Get all possible todo IDs from the entries
+								const todoIds = entries
+									.filter(([key, value]) => key !== '_' && key !== '>' && key !== '#' && key !== undefined)
+									.map(([key]) => key);
+								
+								// Check each potential todo node directly
+								for (const todoId of todoIds) {
+									try {
+										const todoData = await new Promise((resolveRef) => {
+											const refTimeout = setTimeout(() => resolveRef(null), 1000);
+											user.get('todos').get(todoId).once((refData) => {
+												clearTimeout(refTimeout);
+												resolveRef(refData);
+											});
+										});
+										
+										if (todoData && typeof todoData === 'object' && todoData.text !== undefined) {
+											actualData[todoId] = todoData;
+											foundTodos++;
+										} else {
+											actualData[todoId] = null;
+										}
+									} catch (err) {
+										actualData[todoId] = null;
+									}
+								}
+								
+								// Keep metadata
+								actualData._ = data._;
+								
+								resolve(actualData);
+								return;
+							}
+							
+							const hasReferences = entries.some(([key, value]) => 
+								value && typeof value === 'object' && value['#']
+							);
+							
+							if (hasReferences) {
+								const actualData = {};
+								
+								// Fetch actual data for each reference
+								for (const [key, value] of entries) {
+									if (key === '_') continue; // Skip metadata
+									
+									if (value && typeof value === 'object' && value['#']) {
+										// This is a reference, fetch the actual data
+										try {
+											const actualValue = await new Promise((resolveRef) => {
+												const refTimeout = setTimeout(() => resolveRef(null), 2000);
+												user.get('todos').get(key).once((refData) => {
+													clearTimeout(refTimeout);
+													resolveRef(refData);
+			});
+		});
+		
+											if (actualValue) {
+												actualData[key] = actualValue;
+											} else {
+												actualData[key] = null;
+											}
+										} catch (err) {
+											console.error(`Error fetching data for ${key}:`, err);
+											actualData[key] = null;
+										}
+									} else {
+										actualData[key] = value;
+									}
+								}
+								
+								resolve(actualData);
+							} else {
+								resolve(data);
+							}
+						} else {
+							resolve(data);
+						}
+					});
+				});
+			}
+			
+			// If direct access didn't work, try collections API
+			if (!collectionData) {
+				collectionData = await new Promise((resolve) => {
+					const timeout = setTimeout(() => {
+						resolve(null);
+					}, 8000);
+					
+					let attempts = 0;
+					const maxAttempts = 3;
+					
+					const tryGetData = () => {
+						attempts++;
+						
+						user.get(`collections/${collectionName}`).once((data) => {
+							if (data && Object.keys(data).length > 0) {
+								clearTimeout(timeout);
+								resolve(data);
+							} else if (attempts < maxAttempts) {
+								setTimeout(tryGetData, 1000);
+							} else {
+								clearTimeout(timeout);
+								resolve(null);
+							}
+						});
+					};
+					
+					tryGetData();
+				});
+			}
+			
+			if (collectionData && typeof collectionData === 'object') {
+				// First, clean up null nodes asynchronously
+				const entries = Object.entries(collectionData);
+				const nullNodes = entries.filter(([key, value]) => 
+					key !== '_' && key !== undefined && key !== null && value === null
+				);
+				
+				if (nullNodes.length > 0) {
+					// Skip individual node cleanup to avoid "chain not yet supported" errors
+					// The deep cleanup function will handle this more safely
+				}
+				
+				// Convert collection object to array (skip null nodes)
+				const itemsArray = entries
+					.filter(([key, value]) => {
+						// Skip GunDB metadata keys and null values
+						if (key === '_' || key === undefined || key === null) return false;
+						if (value === null) return false; // Skip null nodes (they're being cleaned up)
+						return true;
+					})
+					.map(([key, value]) => {
+						// Clean up the item data
+						const cleanValue = typeof value === 'object' && value !== null 
+							? { ...value } 
+							: { text: String(value || ''), completed: false };
+						
+						// Remove GunDB metadata
+					delete cleanValue._;
+					delete cleanValue['#'];
+					delete cleanValue['>'];
+					
+					return {
+						id: key,
+							...cleanValue,
+							createdAt: cleanValue.createdAt || new Date().toISOString()
+						};
+					})
+					.filter(item => item && item.id && item.text !== undefined);
+				
+				@items = itemsArray;
+			} else {
+				
+				// Check if collection exists at all by trying to access the collection node
+				try {
+					const collectionExists = await new Promise((resolve) => {
+						const timeout = setTimeout(() => resolve(false), 2000);
+						user.get(`collections/${collectionName}`).once((data) => {
+							clearTimeout(timeout);
+							resolve(data !== undefined);
+						});
+					});
+					
+					if (!collectionExists && retryCount < 2) {
+						setTimeout(() => {
+							fetchData(retryCount + 1);
+						}, 3000);
+						return;
+					}
+				} catch (err) {
+					// Collection doesn't exist
+				}
+				
+				@items = defaultValue;
+			}
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error fetching collection ${collectionName}:`, err);
+			
+			// Retry on error if we haven't exceeded max retries
+			if (retryCount < 3) {
+				setTimeout(() => {
+					fetchData(retryCount + 1);
+				}, 2000);
+				return;
+			}
+			
+			@items = defaultValue;
+		} finally {
+			@loading = false;
+		}
+	};
+
+	// Set up real-time listener using Simple API
+	const setupRealtimeListener = () => {
+		if (!realtime) return;
+		
+		// Use Simple API node() method for real-time updates
+		const node = api.node(`collections/${collectionName}`);
+		node.on((value) => {
+			if (value && typeof value === 'object') {
+				// Convert collection object to array
+				const itemsArray = Object.entries(value)
+					.filter(([key, val]) => {
+						if (key === '_' || key === undefined || key === null) return false;
+						if (val === null) return false;
+						return true;
+					})
+					.map(([key, val]) => {
+						const cleanValue = typeof val === 'object' && val !== null 
+							? { ...val } 
+							: { text: String(val || ''), completed: false };
+						
+						delete cleanValue._;
+						delete cleanValue['#'];
+						delete cleanValue['>'];
+						
+						return {
+							id: key,
+							...cleanValue,
+							createdAt: cleanValue.createdAt || new Date().toISOString()
+						};
+					})
+					.filter(item => item && item.id && item.text !== undefined);
+				
+				@items = itemsArray;
+				@loading = false;
+			}
+		});
+	};
+	
+	// Set up the listener
+	setupRealtimeListener();
+
+	// Fetch initial data
+	fetchData();
+
+	// Collection operations using Simple API
+	const add = async (item) => {
+		try {
+			@error = null;
+			
+			// Check if user is logged in
+			if (!api.isLoggedIn()) {
+				@error = 'User not logged in';
+				return null;
+			}
+			
+			const newItem = {
+				...item,
+				id: item.id || Date.now().toString(),
+				createdAt: item.createdAt || new Date().toISOString()
+			};
+			
+			
+			// Try direct GunDB save instead of collections API
+			try {
+				const user = gunInstance.database.getUser();
+				if (!user || !user.is) {
+					console.error('User node not available for saving');
+					@error = 'User not authenticated';
+					return null;
+				}
+				
+				// Save directly to user's todos collection
+				await new Promise((resolve, reject) => {
+					user.get('todos').get(newItem.id).put(newItem, (ack) => {
+						if (ack.err) {
+							console.error('Error saving item:', ack.err);
+							reject(ack.err);
+						} else {
+							resolve(ack);
+						}
+					});
+				});
+				
+			// Update local state after successful save
+			const currentItems = @items;
+			@items = [...currentItems, newItem];
+			
+				// Verify the item was actually saved
+				setTimeout(async () => {
+					try {
+						user.get('todos').get(newItem.id).once((savedData) => {
+							// Item saved successfully
+						});
+					} catch (err) {
+						// Error verifying item save
+					}
+			}, 1000);
+			
+				return newItem;
+			} catch (saveError) {
+				console.error('Direct GunDB save failed, trying collections API:', saveError);
+				
+				// Fallback to collections API
+				const success = await api.addToCollection(collectionName, newItem.id, newItem);
+				
+				if (success) {
+					const currentItems = @items;
+					@items = [...currentItems, newItem];
+			return newItem;
+		} else {
+					console.error('Both direct GunDB and collections API failed');
+					@error = 'Failed to add item to collection';
+			return null;
+				}
+		}
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error adding item to collection ${collectionName}:`, err);
+			return null;
+		}
+	};
+
+	const update = async (id, updates) => {
+		try {
+			@error = null;
+			
+			// Check if user is logged in
+			if (!api.isLoggedIn()) {
+				@error = 'User not logged in';
+				return false;
+			}
+			
+			
+					// Get the current item to preserve existing data
+					const currentItems = @items;
+					const currentItem = currentItems.find(item => item.id === id);
+					
+			if (!currentItem) {
+				console.error('Item not found for update');
+				@error = 'Item not found';
+				return false;
+			}
+			
+						// Merge current item with updates
+						const updatedItem = {
+							...currentItem,
+							...updates,
+							updatedAt: new Date().toISOString()
+						};
+						
+			// Try direct GunDB update first
+			try {
+				const user = gunInstance.database.getUser();
+				if (!user || !user.is) {
+					console.error('User node not available for updating');
+					@error = 'User not authenticated';
+					return false;
+				}
+				
+				// Update directly in user's todos collection
+				await new Promise((resolve, reject) => {
+					user.get('todos').get(id).put(updatedItem, (ack) => {
+						if (ack.err) {
+							console.error('Error updating item:', ack.err);
+							reject(ack.err);
+						} else {
+							resolve(ack);
+						}
+					});
+				});
+				
+				// Update local state after successful save
+				const newItems = currentItems.map(item => 
+					item.id === id ? updatedItem : item
+				);
+				@items = newItems;
+				
+				return true;
+			} catch (updateError) {
+				console.error('Direct GunDB update failed, trying collections API:', updateError);
+				
+				// Fallback to collections API
+				const success = await api.addToCollection(collectionName, id, updatedItem);
+				
+				if (success) {
+					const newItems = currentItems.map(item => 
+						item.id === id ? updatedItem : item
+					);
+					@items = newItems;
+				return true;
+			} else {
+					console.error(`Both direct GunDB and collections API failed for update`);
+					@error = 'Failed to update item';
+				return false;
+				}
+			}
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error updating item in collection ${collectionName}:`, err);
+			return false;
+		}
+	};
+
+	const remove = async (id) => {
+		try {
+			@error = null;
+			
+			// Check if user is logged in
+			if (!api.isLoggedIn()) {
+				@error = 'User not logged in';
+				return false;
+			}
+		
+		
+			// Try direct GunDB remove first
+		try {
+				const user = gunInstance.database.getUser();
+			if (!user || !user.is) {
+					console.error('User node not available for removing');
+					@error = 'User not authenticated';
+					return false;
+				}
+				
+				// Remove directly from user's todos collection
+				await new Promise((resolve, reject) => {
+					user.get('todos').get(id).put(null, (ack) => {
+						if (ack.err) {
+							console.error('Error removing item:', ack.err);
+							reject(ack.err);
+			} else {
+							resolve(ack);
+						}
+					});
+				});
+				
+				// Update local state after successful removal
+				const currentItems = @items;
+				const newItems = currentItems.filter(item => item.id !== id);
+				@items = newItems;
+				
+				return true;
+			} catch (removeError) {
+				console.error('Direct GunDB remove failed, trying collections API:', removeError);
+				
+				// Fallback to collections API
+				const success = await api.removeFromCollection(collectionName, id);
+
+		if (success) {
+			const currentItems = @items;
+			const newItems = currentItems.filter(item => item.id !== id);
+			@items = newItems;
+			return true;
+		} else {
+					console.error(`Both direct GunDB and collections API failed for remove`);
+					@error = 'Failed to remove item from collection';
+			return false;
+				}
+		}
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error removing item from collection ${collectionName}:`, err);
+			return false;
+		}
+	};
+
+	const clear = async () => {
+		try {
+			@error = null;
+			
+			// Check if user is logged in
+			if (!api.isLoggedIn()) {
+				@error = 'User not logged in';
+				return false;
+			}
+			
+			
+			// Use Simple API to clear the collection by creating an empty collection
+			const success = await api.createCollection(collectionName, {});
+			
+			if (success) {
+				@items = defaultValue;
+				return true;
+			} else {
+				console.error('Failed to clear collection');
+				@error = 'Failed to clear collection';
+				return false;
+			}
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error clearing collection ${collectionName}:`, err);
+			return false;
+		}
+	};
+
+
+
+
+	return {
+		items,
+		loading,
+		error,
+		add,
+		update,
+		remove,
+		clear,
+		refresh: fetchData
+	};
+}
+
+/**
+ * Hook for real-time data without initial loading using Simple API
+ * @param {Object} gunInstance - The Gun instance (from autoQuickStart)
+ * @param {string} path - The data path
+ * @param {*} defaultValue - Default value
+ * @returns {Object} { data, error, put, get, remove, set }
+ */
+export function useGunRealtime(gunInstance, path, defaultValue = null) {
+	const data = track(defaultValue);
+	const error = track(null);
+
+	const api = gunInstance.api;
+
+	// Real-time listener using Simple API node() method
+	const node = api.node(path);
+	node.on((value) => {
+		@data = value || defaultValue;
+	});
+
+	// Data operations using Simple API
+	const put = async (newData) => {
+		try {
+			@error = null;
+			return await api.put(path, newData);
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error putting data to ${path}:`, err);
+			return false;
+		}
+	};
+
+	const set = async (newData) => {
+		try {
+			@error = null;
+			return await api.set(path, newData);
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error setting data to ${path}:`, err);
+			return false;
+		}
+	};
+
+	const get = async () => {
+		try {
+			@error = null;
+			return await api.get(path);
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error getting data from ${path}:`, err);
+			return null;
+		}
+	};
+
+	const remove = async () => {
+		try {
+			@error = null;
+			return await api.remove(path);
+		} catch (err) {
+			@error = err.message;
+			console.error(`Error removing data from ${path}:`, err);
+			return false;
+		}
+	};
+
+	return {
+		data,
+		error,
+		put,
+		get,
+		remove,
+		set
+	};
+}

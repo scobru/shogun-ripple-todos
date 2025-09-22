@@ -1,0 +1,85 @@
+import { track, effect } from 'ripple';
+
+/**
+ * Hook for managing session persistence and data synchronization
+ * @param {Object} gunInstance - The Gun instance (from autoQuickStart)
+ * @returns {Object} { isSessionRestored, sessionError, retrySessionRestore }
+ */
+export function useSessionPersistence(gunInstance) {
+	const isSessionRestored = track(false);
+	const sessionError = track(null);
+	const retryCount = track(0);
+
+	const api = gunInstance.api;
+	const database = gunInstance.database;
+
+	// Function to check session restoration status
+	const checkSessionStatus = async () => {
+		try {
+			@sessionError = null;
+			console.log('Checking session restoration status...');
+			
+			// Wait for GunDB's internal session restoration to complete
+			await new Promise(resolve => setTimeout(resolve, 500));
+			
+			// Check if user is logged in (GunDB handles session restoration internally)
+			const isLoggedIn = api.isLoggedIn();
+			console.log('Session status check - isLoggedIn:', isLoggedIn);
+			
+			if (isLoggedIn) {
+				console.log('Session restored successfully by GunDB');
+				@isSessionRestored = true;
+				@retryCount = 0;
+				return true;
+			} else {
+				console.log('No active session found');
+				@sessionError = 'No active session';
+				@isSessionRestored = false;
+				return false;
+			}
+		} catch (error) {
+			console.error('Error during session status check:', error);
+			@sessionError = error.message;
+			@isSessionRestored = false;
+			return false;
+		}
+	};
+
+	// Function to retry session status check
+	const retrySessionRestore = async () => {
+		@retryCount = @retryCount + 1;
+		console.log(`Retrying session status check (attempt ${@retryCount})...`);
+		
+		// Wait a bit before retrying
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		
+		return await checkSessionStatus();
+	};
+
+	// Effect to monitor authentication state changes
+	effect(() => {
+		const isLoggedIn = api.isLoggedIn();
+		
+		if (isLoggedIn && !@isSessionRestored) {
+			// User is logged in but session wasn't restored, mark as restored
+			@isSessionRestored = true;
+			@sessionError = null;
+		} else if (!isLoggedIn && @isSessionRestored) {
+			// User logged out, reset session state
+			@isSessionRestored = false;
+			@sessionError = null;
+			@retryCount = 0;
+		}
+	});
+
+	// Initial session status check
+	checkSessionStatus();
+
+	return {
+		isSessionRestored,
+		sessionError,
+		retryCount,
+		retrySessionRestore,
+		checkSessionStatus
+	};
+}
